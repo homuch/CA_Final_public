@@ -41,6 +41,10 @@ module CHIP(clk,
     reg readInstr,nextReadInstr, updatePC;
     wire branch;
     reg regShouldWrite;
+    reg aluValid, aluMode, in_A,in_B,mulWaiting;
+    wire aluReady,aluOut;
+
+    reg [20:0] immtest;
 
     parameter IDLE = 5'd0;
     parameter AUIPC  = 5'd1;
@@ -79,13 +83,24 @@ module CHIP(clk,
 
     // Todo: other submodules
 
+    mulDiv alu0(
+        .clk(clk),
+        .rst_n(rst_n),
+        .valid(aluValid),
+        .ready(aluReady),
+        .mode(aluMode),
+        .in_A(in_A),
+        .in_B(in_B),
+        .out(aluOut)
+    );
+
     //==== Combinational Part =====================
 
     assign rs1 = mem_rdata_I[19:15];
     assign rs2 = mem_rdata_I[24:20];
     assign rd = mem_rdata_I[11:7];
     assign mem_addr_I = PC;
-    assign mem_addr_D = (state == LW)? rs1_data + mem_rdata_I[31:20]:rs1_data + {mem_rdata_I[31:25],mem_rdata_I[11:7]};
+    assign mem_addr_D = (state == LW)? $signed(rs1_data) + $signed(mem_rdata_I[31:20]):$signed(rs1_data) + $signed({mem_rdata_I[31:25],mem_rdata_I[11:7]});
     assign mem_wen_D = (state == SW && sub_state==EX)? 1'd1:1'd0;
     assign mem_wdata_D = rs2_data;
     assign regWrite = regShouldWrite&&(sub_state==WB);
@@ -154,6 +169,13 @@ module CHIP(clk,
 
     //ALU
     always @(*)begin
+        if(state!=MUL)begin
+            mulWaiting = 1'd0;
+            aluMode = 2'd1;
+            aluValid = 1'd0;
+            in_A = 32'd0;
+            in_B = 32'd0;
+        end
         case (sub_state)
             ID:regShouldWrite = 1'd0;
             EX:begin
@@ -165,13 +187,29 @@ module CHIP(clk,
                 // mem_wen_D = 1'd0;
                 case (state)
                     ADDI:begin
-                        rd_data = mem_rdata_I[31:20]+rs1_data;
+                        rd_data = $signed(mem_rdata_I[31:20])+$signed(rs1_data);
                     end
                     // SLTI: rd_data = ($signed(rs1_data)<$signed({20{mem_addr_I[31]},mem_addr_I[31:20]}))? 32'd1:32'd0;
-                    ADD: rd_data = rs1_data+rs2_data;
-                    SUB: rd_data = rs1_data-rs2_data;
+                    ADD: rd_data = $signed(rs1_data)+$signed(rs2_data);
+                    SUB: rd_data = $signed(rs1_data)-$signed(rs2_data);
                     XOR: rd_data = rs1_data^rs2_data;
-                    // MUL://mul
+                    MUL:begin
+                        if(!mulWaiting)begin
+                            aluValid = 1'd1;
+                        end
+                        else aluValid = 1'd0;
+
+                        in_A = rs1_data;
+                        in_B = rs2_data;
+                        aluMode = 2'd1;
+                        mulWaiting=1'd1;
+                        sub_state_nxt = EX;
+                        rd_data = aluOut;
+                        if(aluReady)begin
+                            sub_state_nxt = WB;
+                            mulWaiting = 1'd0;
+                        end
+                    end
                     LW:begin 
                         // mem_addr_D = rs1_data + mem_rdata_I[31:20];
                         // mem_wen_D = 1'd0;
@@ -217,23 +255,27 @@ module CHIP(clk,
         endcase
     end
 
+    
+
     //PC update/branch
     always @(*)begin
         PC_nxt = PC;
         nextReadInstr = 1'd0;
+        immtest = 21'd0;
         if(updatePC)begin
             nextReadInstr=1'd1;
             PC_nxt = PC+32'd4;
             if(branch)begin
                 if(state==JAL)begin
-                    PC_nxt = {mem_rdata_I[31],mem_addr_I[19:12],mem_addr_I[20],mem_addr_I[30:21],1'd0}+PC;
+                    PC_nxt = $signed({mem_rdata_I[31],mem_rdata_I[19:12],mem_rdata_I[20],mem_rdata_I[30:21],1'd0})+$signed(PC);
+                    immtest = {mem_rdata_I[31],mem_rdata_I[19:12],mem_rdata_I[20],mem_rdata_I[30:21],1'd0};
                 end
                 else if(state==JALR)begin
-                    PC_nxt = rs1_data+mem_rdata_I[31:20];
+                    PC_nxt = $signed(rs1_data)+$signed(mem_rdata_I[31:20]);
                 end
                 else if(state==BEQ) begin
                     if(rs1_data==rs2_data)begin
-                        PC_nxt = {mem_rdata_I[12],mem_rdata_I[7],mem_rdata_I[30:25],mem_rdata_I[11:8],1'd0}+PC;
+                        PC_nxt = $signed({mem_rdata_I[12],mem_rdata_I[7],mem_rdata_I[30:25],mem_rdata_I[11:8],1'd0})+$signed(PC);
                     end
                 end            
         end
@@ -305,7 +347,141 @@ module reg_file(clk, rst_n, wen, a1, a2, aw, d, q1, q2);
     end
 endmodule
 
-// module mulDiv(clk, rst_n, valid, ready, mode, in_A, in_B, out);
-//     // Todo: your HW2
+module mulDiv(clk, rst_n, valid, ready, mode, in_A, in_B, out);
+    // Todo: your HW2
+        // Definition of ports
+    input         clk, rst_n;
+    input         valid;
+    input  [1:0]  mode; // mode: 0: mulu, 1: divu, 2: shift, 3: avg
+    output        ready;
+    input  [31:0] in_A, in_B;
+    output [63:0] out;
 
-// endmodule
+    // Definition of states
+    parameter IDLE = 3'd0;
+    parameter MUL  = 3'd1;
+    parameter DIV  = 3'd2;
+    parameter SHIFT = 3'd3;
+    parameter AVG = 3'd4;
+    parameter OUT  = 3'd5;
+
+    // Todo: Wire and reg if needed
+    reg  [ 2:0] state, state_nxt;
+    reg  [ 4:0] counter, counter_nxt;
+    reg  [63:0] shreg, shreg_nxt;
+    reg  [31:0] alu_in, alu_in_nxt;
+    reg  [32:0] alu_out;
+
+    // Todo: Instatiate any primitives if needed
+
+    // Todo 5: Wire assignments
+    assign ready = (state == OUT);
+    assign out = ready? shreg : 64'd0;
+    // Combinational always block
+    // Todo 1: Next-state logic of state machine
+    always @(*) begin
+        case(state)
+            IDLE: begin
+                if(!valid)state_nxt = IDLE;
+                else begin
+                    case(mode)
+                        2'd0 : state_nxt = MUL;
+                        2'd1 : state_nxt = DIV;
+                        2'd2 : state_nxt = SHIFT;
+                        2'd3 : state_nxt = AVG;
+                        default: state_nxt = IDLE;
+                    endcase
+                end
+            end
+            MUL : state_nxt = counter<31 ? MUL:OUT;
+            DIV : state_nxt = counter<31 ? DIV:OUT;
+            SHIFT : state_nxt = OUT;
+            AVG : state_nxt = OUT;
+            OUT : state_nxt = IDLE;
+            default : state_nxt = IDLE;
+        endcase
+    end
+    // Todo 2: Counter
+    always @(*) begin
+        if(state == MUL || state == DIV)
+            counter_nxt = counter + 5'd1;
+        else
+            counter_nxt = 5'd0;
+    end
+    // ALU input
+    always @(*) begin
+        case(state)
+            IDLE: begin
+                if (valid) alu_in_nxt = in_B;
+                else       alu_in_nxt = 0;
+            end
+            OUT : alu_in_nxt = 0;
+            default: alu_in_nxt = alu_in;
+        endcase
+    end
+
+    // Todo 3: ALU output
+    always @(*)begin
+        // shreg_nxt = shreg;
+        case(state)
+            MUL : 
+                alu_out = shreg[0]? alu_in + shreg[63:32] : shreg[63:32];
+                //shreg_nxt[63:32] = alu_out;
+            DIV : 
+                alu_out = (shreg[62:31] >= alu_in)? {1'd1, shreg[62:31]-alu_in}:{1'd0, shreg[62:31]};//with left shifted
+                // shreg_nxt[63:32] = alu_out;shreg_nxt[0] = 1;
+            SHIFT :
+                alu_out = shreg[31:0]>>alu_in[2:0];
+            AVG : // note that alu_out is 33'
+                alu_out = (shreg[31:0] + alu_in)>>1;
+            default:
+                alu_out = 33'd0;
+        endcase
+    end    
+    
+    // Todo 4: Shift register
+    always @(*)begin
+        shreg_nxt = shreg;// avoid latch
+        case(state)
+            IDLE : begin
+                shreg_nxt = 64'd0;
+                if(valid) shreg_nxt[31:0] = in_A;
+                else ;
+            end
+            MUL : begin
+                //shreg_nxt = {1'd0, shreg_nxt[63:1]};// right shift
+                shreg_nxt = shreg>>1;
+                shreg_nxt[63:31] = alu_out;
+            end
+            DIV : begin
+                //shreg_nxt = {shreg_nxt[62:0], 1'd0};// left shift
+                shreg_nxt = shreg<<1;
+                shreg_nxt[63:32]= alu_out[31:0];//discard(left shift) leftmost bit i.e. alu_out[31]
+                shreg_nxt[0] = alu_out[32];
+            end
+            SHIFT : 
+                shreg_nxt = {32'd0, alu_out[31:0]};
+            AVG : 
+                shreg_nxt = {32'd0, alu_out[31:0]};
+            default:
+                shreg_nxt = 64'd0;
+        endcase
+    end
+
+    // Todo: Sequential always block
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            state <= IDLE;
+            shreg <=64'd0;
+            alu_in <=32'd0;
+            counter <= 5'd0;
+        end
+        else begin
+            state <= state_nxt;
+            shreg <=shreg_nxt;
+            alu_in <=alu_in_nxt;
+            counter <= counter_nxt;
+        end
+    end
+
+endmodule
