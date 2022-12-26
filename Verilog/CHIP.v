@@ -44,7 +44,6 @@ module CHIP(clk,
     reg aluValid, aluMode, in_A,in_B,mulWaiting;
     wire aluReady,aluOut;
 
-    reg [20:0] immtest;
 
     parameter IDLE = 5'd0;
     parameter AUIPC  = 5'd1;
@@ -189,7 +188,12 @@ module CHIP(clk,
                     ADDI:begin
                         rd_data = $signed(mem_rdata_I[31:20])+$signed(rs1_data);
                     end
-                    // SLTI: rd_data = ($signed(rs1_data)<$signed({20{mem_addr_I[31]},mem_addr_I[31:20]}))? 32'd1:32'd0;
+                    SLTI:begin
+                         rd_data =32'd0;
+                         if($signed(rs1_data)<$signed(mem_addr_I[31:20]))begin
+                            rd_data = 32'd1;
+                         end
+                    end
                     ADD: rd_data = $signed(rs1_data)+$signed(rs2_data);
                     SUB: rd_data = $signed(rs1_data)-$signed(rs2_data);
                     XOR: rd_data = rs1_data^rs2_data;
@@ -223,10 +227,11 @@ module CHIP(clk,
                     // BEQ:sub_state_nxt=ID;
                     JAL:rd_data = PC+32'd4;
                     JALR:rd_data = PC+32'd4;
-                    default:begin
-                        sub_state_nxt = ID;
-                        updatePC=1'd1;
-                    end
+                    BEQ:rd_data = 32'd0;
+                    // default:begin
+                    //     sub_state_nxt = ID;
+                    //     updatePC=1'd1;
+                    // end
                 endcase
             end
             WB:begin
@@ -238,7 +243,7 @@ module CHIP(clk,
                     ADD: regShouldWrite = 1'd1;
                     SUB: regShouldWrite = 1'd1;
                     XOR: regShouldWrite = 1'd1;
-                    // MUL://mul
+                    MUL:regShouldWrite = 1'd1;
                     LW: begin
                         regShouldWrite = 1'd1;
                         rd_data = mem_rdata_D;
@@ -261,14 +266,12 @@ module CHIP(clk,
     always @(*)begin
         PC_nxt = PC;
         nextReadInstr = 1'd0;
-        immtest = 21'd0;
         if(updatePC)begin
             nextReadInstr=1'd1;
             PC_nxt = PC+32'd4;
             if(branch)begin
                 if(state==JAL)begin
                     PC_nxt = $signed({mem_rdata_I[31],mem_rdata_I[19:12],mem_rdata_I[20],mem_rdata_I[30:21],1'd0})+$signed(PC);
-                    immtest = {mem_rdata_I[31],mem_rdata_I[19:12],mem_rdata_I[20],mem_rdata_I[30:21],1'd0};
                 end
                 else if(state==JALR)begin
                     PC_nxt = $signed(rs1_data)+$signed(mem_rdata_I[31:20]);
@@ -278,7 +281,7 @@ module CHIP(clk,
                         PC_nxt = $signed({mem_rdata_I[12],mem_rdata_I[7],mem_rdata_I[30:25],mem_rdata_I[11:8],1'd0})+$signed(PC);
                     end
                 end            
-        end
+            end
         end
         updatePC = 1'd0;
     end
