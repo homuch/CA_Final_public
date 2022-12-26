@@ -41,8 +41,12 @@ module CHIP(clk,
     reg readInstr,nextReadInstr, updatePC;
     wire branch;
     reg regShouldWrite;
-    reg aluValid, aluMode, in_A,in_B,mulWaiting;
-    wire aluReady,aluOut;
+    reg aluValid,mulWaiting;
+    reg [1:0] aluMode;
+    reg [31:0] in_A,in_B;
+    wire aluReady;
+    wire [63:0] aluOut;
+    reg [11:0] immtest;
 
 
     parameter IDLE = 5'd0;
@@ -168,9 +172,10 @@ module CHIP(clk,
 
     //ALU
     always @(*)begin
-        if(state!=MUL)begin
+        immtest=12'd0;
+        if(state!=MUL&&sub_state!=EX)begin
             mulWaiting = 1'd0;
-            aluMode = 2'd1;
+            aluMode = 2'd0;
             aluValid = 1'd0;
             in_A = 32'd0;
             in_B = 32'd0;
@@ -190,7 +195,8 @@ module CHIP(clk,
                     end
                     SLTI:begin
                          rd_data =32'd0;
-                         if($signed(rs1_data)<$signed(mem_addr_I[31:20]))begin
+                         immtest=mem_rdata_I[31:20];
+                         if($signed(rs1_data)<$signed(mem_rdata_I[31:20]))begin
                             rd_data = 32'd1;
                          end
                     end
@@ -205,10 +211,10 @@ module CHIP(clk,
 
                         in_A = rs1_data;
                         in_B = rs2_data;
-                        aluMode = 2'd1;
+                        aluMode = 2'd0;
                         mulWaiting=1'd1;
                         sub_state_nxt = EX;
-                        rd_data = aluOut;
+                        rd_data = aluOut[31:0];
                         if(aluReady)begin
                             sub_state_nxt = WB;
                             mulWaiting = 1'd0;
@@ -302,6 +308,7 @@ module CHIP(clk,
             state <= state_nxt;
             sub_state<=sub_state_nxt;
             readInstr <=nextReadInstr;
+            aluValid <=1'd0;
         end
     end
 endmodule
